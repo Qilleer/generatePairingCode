@@ -5,7 +5,8 @@ const {
   demoteParticipant,
   getGroupAdmins,
   isParticipantInGroup,
-  globalLIDMapper
+  globalLIDMapper,
+  extractCleanPhoneNumber
 } = require('../whatsappClient');
 const { showAdminManagementMenu } = require('./menuHandler');
 const { 
@@ -20,7 +21,7 @@ const {
 } = require('../utils/helpers');
 
 // IMPROVED: Helper function to extract clean phone number from JID/LID
-function extractCleanPhoneNumber(jid, userStates = null, userId = null) {
+function extractCleanPhoneNumberForAdmin(jid, userStates = null, userId = null) {
   if (!jid) return 'Unknown';
   
   // Remove device suffix (:0, :1, etc) first
@@ -45,10 +46,13 @@ function extractCleanPhoneNumber(jid, userStates = null, userId = null) {
   
   // Case 2: LID format (@lid) - Need special handling
   if (jid.includes('@lid')) {
-    // Tambahin: cek mapping global dulu
+    // Check global LID mapper first
     if (typeof globalLIDMapper !== 'undefined') {
       const mapped = globalLIDMapper.getPhoneFromLID(jid);
-      if (mapped) return mapped;
+      if (mapped) {
+        console.log(`[DEBUG] Found LID mapping: ${jid} → ${mapped}`);
+        return mapped;
+      }
     }
     
     // Try to get the associated phone number from bot user info
@@ -129,51 +133,9 @@ function extractCleanPhoneNumber(jid, userStates = null, userId = null) {
   return identifier;
 }
 
-// IMPROVED: Function to get WhatsApp phone number from socket user info
-function getBotPhoneNumber(userStates, userId) {
-  if (!userStates || !userId || !userStates[userId]?.whatsapp?.socket?.user) {
-    return null;
-  }
-  
-  const botUser = userStates[userId].whatsapp.socket.user;
-  
-  // Extract phone from bot's JID
-  if (botUser.id) {
-    const phoneFromJid = botUser.id.split('@')[0].split(':')[0];
-    console.log(`[DEBUG] Bot phone from JID: ${phoneFromJid}`);
-    return phoneFromJid;
-  }
-  
-  return null;
-}
-
-// IMPROVED: Function to create LID to phone mapping from group metadata
-function createLidPhoneMapping(userStates, userId, groupMetadata) {
-  const mapping = {};
-  
-  if (!groupMetadata || !groupMetadata.participants) {
-    return mapping;
-  }
-  
-  // Try to correlate LID participants with regular participants
-  const lidParticipants = groupMetadata.participants.filter(p => p.id.includes('@lid'));
-  const regularParticipants = groupMetadata.participants.filter(p => p.id.includes('@s.whatsapp.net'));
-  
-  console.log(`[DEBUG] LID participants: ${lidParticipants.length}, Regular: ${regularParticipants.length}`);
-  
-  // If we have both types, try to match them based on admin status or other clues
-  lidParticipants.forEach(lidParticipant => {
-    const extractedPhone = extractCleanPhoneNumber(lidParticipant.id, userStates, userId);
-    mapping[lidParticipant.id] = extractedPhone;
-    console.log(`[DEBUG] LID mapping: ${lidParticipant.id} → ${extractedPhone}`);
-  });
-  
-  return mapping;
-}
-
-// UPDATED: Helper function to get display name for admin with improved phone extraction
+// UPDATED: Function to get display name for admin with improved phone extraction
 function getAdminDisplayName(admin, userStates = null, userId = null) {
-  const phoneNumber = extractCleanPhoneNumber(admin.id, userStates, userId);
+  const phoneNumber = extractCleanPhoneNumberForAdmin(admin.id, userStates, userId);
   const role = admin.admin === 'superadmin' ? '👑' : '👤';
   
   return `${role} ${phoneNumber}`;
@@ -195,55 +157,17 @@ async function handleAdminCallbacks(query, bot, userStates) {
         await handleAddPromoteAdmin(chatId, userId, bot, userStates);
         break;
         
+      // NEW DEMOTE FLOW - START
       case data === 'demote_admin':
-        await handleDemoteAdmin(chatId, userId, bot, userStates);
+        await handleDemoteAdminNew(chatId, userId, bot, userStates);
         break;
         
-      case data === 'search_groups':
-        await handleSearchGroups(chatId, userId, bot, userStates);
+      case data === 'search_admin_in_all_groups':
+        await handleSearchAdminInAllGroups(chatId, userId, bot, userStates);
         break;
         
-      case data === 'finish_group_selection':
-        await handleFinishGroupSelection(chatId, userId, bot, userStates);
-        break;
-        
-      case data === 'start_search_admin':
-        await handleStartSearchAdmin(chatId, userId, bot, userStates);
-        break;
-        
-      case data === 'finish_demote_selection':
-        await handleFinishDemoteSelection(chatId, userId, bot, userStates);
-        break;
-        
-      case data === 'confirm_add_promote':
-        await handleConfirmAddPromote(chatId, userId, bot, userStates);
-        break;
-        
-      case data === 'confirm_demote':
-        await handleConfirmDemote(chatId, userId, bot, userStates);
-        break;
-        
-      case data === 'cancel_admin_flow':
-        await handleCancelAdminFlow(chatId, userId, bot, userStates);
-        break;
-        
-      // NEW DEMOTE FLOW HANDLERS
-      case data === 'search_demote_groups':
-        await handleSearchDemoteGroups(chatId, userId, bot, userStates);
-        break;
-        
-      case data === 'finish_demote_group_selection':
-        await handleFinishDemoteGroupSelection(chatId, userId, bot, userStates);
-        break;
-        
-      case data.startsWith('toggle_group_'):
-        const groupId = data.replace('toggle_group_', '');
-        await handleToggleGroupSelection(chatId, userId, groupId, bot, userStates, query.message.message_id);
-        break;
-        
-      case data.startsWith('groups_page_'):
-        const page = parseInt(data.replace('groups_page_', ''));
-        await handleGroupsPage(chatId, userId, page, bot, userStates, query.message.message_id);
+      case data === 'confirm_demote_from_selected_groups':
+        await handleConfirmDemoteFromSelectedGroups(chatId, userId, bot, userStates);
         break;
         
       case data.startsWith('toggle_demote_group_'):
@@ -255,15 +179,32 @@ async function handleAdminCallbacks(query, bot, userStates) {
         const demoteGroupPage = parseInt(data.replace('demote_groups_page_', ''));
         await handleDemoteGroupsPage(chatId, userId, demoteGroupPage, bot, userStates, query.message.message_id);
         break;
+      // NEW DEMOTE FLOW - END
         
-      case data.startsWith('toggle_admin_'):
-        const adminId = data.replace('toggle_admin_', '');
-        await handleToggleAdminSelection(chatId, userId, adminId, bot, userStates, query.message.message_id);
+      case data === 'search_groups':
+        await handleSearchGroups(chatId, userId, bot, userStates);
         break;
         
-      case data.startsWith('admins_page_'):
-        const adminPage = parseInt(data.replace('admins_page_', ''));
-        await handleAdminsPage(chatId, userId, adminPage, bot, userStates, query.message.message_id);
+      case data === 'finish_group_selection':
+        await handleFinishGroupSelection(chatId, userId, bot, userStates);
+        break;
+        
+      case data === 'confirm_add_promote':
+        await handleConfirmAddPromote(chatId, userId, bot, userStates);
+        break;
+        
+      case data === 'cancel_admin_flow':
+        await handleCancelAdminFlow(chatId, userId, bot, userStates);
+        break;
+        
+      case data.startsWith('toggle_group_'):
+        const groupId = data.replace('toggle_group_', '');
+        await handleToggleGroupSelection(chatId, userId, groupId, bot, userStates, query.message.message_id);
+        break;
+        
+      case data.startsWith('groups_page_'):
+        const page = parseInt(data.replace('groups_page_', ''));
+        await handleGroupsPage(chatId, userId, page, bot, userStates, query.message.message_id);
         break;
     }
   } catch (err) {
@@ -295,17 +236,43 @@ async function handleAdminMessages(msg, bot, userStates) {
       return true;
     }
     
-    // NEW: Handle search query for demote flow
-    if (state.step === 'waiting_demote_search_query' && state.type === 'demote') {
+    // NEW DEMOTE FLOW - Handle admin numbers input
+    if (state.step === 'waiting_admin_numbers' && state.type === 'demote_new') {
       // Delete user's message
       await safeDeleteMessage(bot, chatId, msg.message_id);
       
-      state.searchQuery = text.trim();
-      state.currentPage = 0;
-      state.step = 'select_demote_groups';
+      // Parse admin numbers
+      const { phoneNumbers, errors } = parsePhoneNumbers(text);
       
-      const loadingMsg = await bot.sendMessage(chatId, '⏳ Mencari grup...');
-      await showDemoteGroupsList(chatId, userId, bot, userStates, loadingMsg.message_id);
+      if (errors.length > 0) {
+        await bot.sendMessage(chatId, `❌ ${errors.join('\n')}\n\nFormat harus 10-15 digit angka saja, tanpa + atau spasi.`);
+        return true;
+      }
+      
+      if (phoneNumbers.length === 0) {
+        await bot.sendMessage(chatId, '❌ Tidak ada nomor admin yang valid!');
+        return true;
+      }
+      
+      state.adminNumbers = phoneNumbers;
+      state.step = 'confirm_search';
+      
+      // Show confirmation with search button
+      let message = `👥 **Admin yang akan dicari:**\n`;
+      phoneNumbers.forEach((number, index) => {
+        message += `${index + 1}. ${number}\n`;
+      });
+      message += `\n🔍 Klik tombol di bawah untuk mulai mencari admin di semua grup.`;
+      
+      await bot.sendMessage(chatId, message, {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🔍 Cari Admin di Semua Grup', callback_data: 'search_admin_in_all_groups' }],
+            [{ text: '❌ Batal', callback_data: 'cancel_admin_flow' }]
+          ]
+        }
+      });
       return true;
     }
     
@@ -328,14 +295,348 @@ async function handleAdminMessages(msg, bot, userStates) {
       
       if (state.type === 'add_promote') {
         await handleAdminNumbersForAddPromote(chatId, userId, phoneNumbers, bot, userStates);
-      } else if (state.type === 'demote') {
-        await handleAdminNumbersForDemote(chatId, userId, phoneNumbers, bot, userStates);
       }
       return true;
     }
   }
   
   return false; // Not handled
+}
+
+// NEW DEMOTE FLOW - Handle Demote Admin (New Flow)
+async function handleDemoteAdminNew(chatId, userId, bot, userStates) {
+  // Check if WhatsApp is connected
+  if (!userStates[userId]?.whatsapp?.isConnected) {
+    await bot.sendMessage(chatId, '❌ WhatsApp belum terhubung! Login dulu ya.');
+    return;
+  }
+  
+  // Initialize new demote flow state
+  userStates[userId].adminFlow = {
+    type: 'demote_new',
+    step: 'waiting_admin_numbers',
+    adminNumbers: [],
+    foundGroups: [],
+    selectedGroups: [],
+    currentPage: 0
+  };
+  
+  console.log(`[DEBUG][DEMOTE_NEW] Initialized new demote flow for user ${userId}`);
+  
+  const message = `📝 *Input Nomor Admin yang Mau Di-Demote*\n\n`;
+  const instructions = `💬 Ketik nomor admin yang mau di-demote:\n\n`;
+  const format = `**Format:**\n62812345\n6213456\n62987654\n\n*(Satu nomor per baris, tanpa + atau spasi)*`;
+  
+  await bot.sendMessage(chatId, message + instructions + format, {
+    parse_mode: 'Markdown',
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '❌ Batal', callback_data: 'cancel_admin_flow' }]
+      ]
+    }
+  });
+}
+
+// NEW DEMOTE FLOW - Search admin in all groups
+async function handleSearchAdminInAllGroups(chatId, userId, bot, userStates) {
+  const state = userStates[userId].adminFlow;
+  
+  if (!state || state.type !== 'demote_new' || !state.adminNumbers || state.adminNumbers.length === 0) {
+    await bot.sendMessage(chatId, '❌ Tidak ada nomor admin yang valid untuk dicari.');
+    return;
+  }
+  
+  const loadingMsg = await bot.sendMessage(chatId, '⏳ Mencari admin di semua grup...');
+  
+  try {
+    console.log(`[DEBUG][DEMOTE_NEW] Searching admins in all groups for: ${state.adminNumbers.join(', ')}`);
+    
+    const groups = await getAllGroups(userId);
+    const foundResults = [];
+    
+    for (const group of groups) {
+      try {
+        console.log(`[DEBUG][DEMOTE_NEW] Checking group: ${group.name} (${group.id})`);
+        
+        const admins = await getGroupAdmins(userId, group.id);
+        console.log(`[DEBUG][DEMOTE_NEW] Found ${admins.length} admins in group ${group.name}`);
+        
+        const groupFoundAdmins = [];
+        
+        for (const adminNumber of state.adminNumbers) {
+          console.log(`[DEBUG][DEMOTE_NEW] Looking for admin number: ${adminNumber}`);
+          
+          // Method 1: Direct JID matching
+          const directJid = `${adminNumber}@s.whatsapp.net`;
+          const directLid = `${adminNumber}@lid`;
+          
+          let foundAdmin = admins.find(admin => 
+            admin.id === directJid || admin.id === directLid
+          );
+          
+          if (foundAdmin) {
+            console.log(`[DEBUG][DEMOTE_NEW] Found via direct JID: ${foundAdmin.id}`);
+            groupFoundAdmins.push({
+              number: adminNumber,
+              jid: foundAdmin.id,
+              role: foundAdmin.admin,
+              method: 'direct_jid'
+            });
+            continue;
+          }
+          
+          // Method 2: Extract phone number and compare
+          for (const admin of admins) {
+            const extractedPhone = extractCleanPhoneNumberForAdmin(admin.id, userStates, userId);
+            console.log(`[DEBUG][DEMOTE_NEW] Comparing ${adminNumber} with extracted ${extractedPhone} from ${admin.id}`);
+            
+            if (extractedPhone === adminNumber) {
+              console.log(`[DEBUG][DEMOTE_NEW] Found via phone extraction: ${admin.id} → ${extractedPhone}`);
+              groupFoundAdmins.push({
+                number: adminNumber,
+                jid: admin.id,
+                role: admin.admin,
+                method: 'phone_extraction'
+              });
+              break;
+            }
+            
+            // Also try partial matching (last 8 digits)
+            const last8Admin = adminNumber.slice(-8);
+            const last8Extracted = extractedPhone.slice(-8);
+            
+            if (last8Admin === last8Extracted && last8Admin.length === 8) {
+              console.log(`[DEBUG][DEMOTE_NEW] Found via last 8 digits: ${admin.id} → ${extractedPhone}`);
+              groupFoundAdmins.push({
+                number: adminNumber,
+                jid: admin.id,
+                role: admin.admin,
+                method: 'partial_match'
+              });
+              break;
+            }
+          }
+          
+          // Method 3: Try LID mapping if available
+          if (!foundAdmin && typeof globalLIDMapper !== 'undefined') {
+            for (const admin of admins) {
+              if (admin.id.includes('@lid')) {
+                const mappedPhone = globalLIDMapper.getPhoneFromLID(admin.id, group.id);
+                if (mappedPhone === adminNumber) {
+                  console.log(`[DEBUG][DEMOTE_NEW] Found via LID mapping: ${admin.id} → ${mappedPhone}`);
+                  groupFoundAdmins.push({
+                    number: adminNumber,
+                    jid: admin.id,
+                    role: admin.admin,
+                    method: 'lid_mapping'
+                  });
+                  break;
+                }
+              }
+            }
+          }
+        }
+        
+        if (groupFoundAdmins.length > 0) {
+          foundResults.push({
+            groupId: group.id,
+            groupName: group.name,
+            foundAdmins: groupFoundAdmins
+          });
+          console.log(`[DEBUG][DEMOTE_NEW] Group ${group.name}: Found ${groupFoundAdmins.length} matching admins`);
+        }
+        
+      } catch (err) {
+        console.error(`[DEBUG][DEMOTE_NEW] Error checking group ${group.id}:`, err);
+      }
+    }
+    
+    state.foundGroups = foundResults;
+    state.selectedGroups = [];
+    state.step = 'select_groups_to_demote';
+    state.currentPage = 0;
+    
+    if (foundResults.length === 0) {
+      await safeEditMessage(bot, chatId, loadingMsg.message_id, 
+        `❌ **Admin tidak ditemukan!**\n\nAdmin dengan nomor berikut tidak ditemukan di grup manapun:\n${state.adminNumbers.map(n => `• ${n}`).join('\n')}\n\nPastikan:\n• Nomor sudah benar\n• Admin masih ada di grup\n• Bot memiliki akses ke grup`,
+        {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🏠 Menu Utama', callback_data: 'main_menu' }]
+            ]
+          }
+        }
+      );
+      return;
+    }
+    
+    await showFoundGroupsForDemote(chatId, userId, bot, userStates, loadingMsg.message_id);
+    
+  } catch (err) {
+    console.error('Error searching admins:', err);
+    await safeEditMessage(bot, chatId, loadingMsg.message_id, `❌ Error mencari admin: ${err.message}`, {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '🏠 Menu Utama', callback_data: 'main_menu' }]
+        ]
+      }
+    });
+  }
+}
+
+// NEW DEMOTE FLOW - Show found groups for demote with pagination
+async function showFoundGroupsForDemote(chatId, userId, bot, userStates, messageId) {
+  const state = userStates[userId].adminFlow;
+  const groupsPerPage = 5; // 5 groups per page for better readability
+  
+  const pagination = createPagination(state.currentPage, state.foundGroups.length, groupsPerPage);
+  const pageGroups = state.foundGroups.slice(pagination.startIndex, pagination.endIndex);
+  
+  let message = `🎯 **Admin Ditemukan di ${state.foundGroups.length} Grup**\n\n`;
+  message += `📞 **Nomor yang dicari:**\n${state.adminNumbers.map(n => `• ${n}`).join('\n')}\n\n`;
+  message += `📄 Halaman ${pagination.currentPage + 1} dari ${pagination.totalPages}\n`;
+  message += `✅ Terpilih: ${state.selectedGroups.length} grup\n\n`;
+  
+  const keyboard = [];
+  
+  // Groups with found admins
+  pageGroups.forEach((result, index) => {
+    const isSelected = state.selectedGroups.includes(result.groupId);
+    const icon = isSelected ? '✅' : '⭕';
+    
+    // Group button
+    keyboard.push([{
+      text: `${icon} ${result.groupName}`,
+      callback_data: `toggle_demote_group_${result.groupId}`
+    }]);
+    
+    // Show found admins in this group
+    result.foundAdmins.forEach(admin => {
+      const roleIcon = admin.role === 'superadmin' ? '👑' : '👤';
+      const methodText = admin.method === 'direct_jid' ? 'Direct' : 
+                        admin.method === 'phone_extraction' ? 'Phone' :
+                        admin.method === 'lid_mapping' ? 'LID' : 'Partial';
+      
+      keyboard.push([{
+        text: `  ${roleIcon} ${admin.number} (${methodText})`,
+        callback_data: 'noop'
+      }]);
+    });
+    
+    // Add separator if not last item
+    if (index < pageGroups.length - 1) {
+      keyboard.push([{
+        text: '────────────',
+        callback_data: 'noop'
+      }]);
+    }
+  });
+  
+  // Navigation buttons
+  const navButtons = [];
+  if (pagination.hasPrev) {
+    navButtons.push({ text: '◀️ Prev', callback_data: `demote_groups_page_${pagination.currentPage - 1}` });
+  }
+  if (pagination.hasNext) {
+    navButtons.push({ text: 'Next ▶️', callback_data: `demote_groups_page_${pagination.currentPage + 1}` });
+  }
+  if (navButtons.length > 0) {
+    keyboard.push(navButtons);
+  }
+  
+  // Action buttons
+  if (state.selectedGroups.length > 0) {
+    keyboard.push([{ text: `🚀 Demote dari ${state.selectedGroups.length} Grup`, callback_data: 'confirm_demote_from_selected_groups' }]);
+  }
+  
+  keyboard.push([{ text: '❌ Batal', callback_data: 'cancel_admin_flow' }]);
+  
+  await safeEditMessage(bot, chatId, messageId, message, {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: keyboard }
+  });
+}
+
+// NEW DEMOTE FLOW - Handle toggle group selection for demote
+async function handleToggleDemoteGroupSelection(chatId, userId, groupId, bot, userStates, messageId) {
+  const state = userStates[userId].adminFlow;
+  
+  if (!state || state.type !== 'demote_new') return;
+  
+  const index = state.selectedGroups.indexOf(groupId);
+  if (index > -1) {
+    state.selectedGroups.splice(index, 1);
+    console.log(`[DEBUG][DEMOTE_NEW] Removed group ${groupId} from selection`);
+  } else {
+    state.selectedGroups.push(groupId);
+    console.log(`[DEBUG][DEMOTE_NEW] Added group ${groupId} to selection`);
+  }
+  
+  await showFoundGroupsForDemote(chatId, userId, bot, userStates, messageId);
+}
+
+// NEW DEMOTE FLOW - Handle page navigation for demote groups
+async function handleDemoteGroupsPage(chatId, userId, page, bot, userStates, messageId) {
+  const state = userStates[userId].adminFlow;
+  
+  if (!state || state.type !== 'demote_new') return;
+  
+  state.currentPage = page;
+  await showFoundGroupsForDemote(chatId, userId, bot, userStates, messageId);
+}
+
+// NEW DEMOTE FLOW - Handle confirm demote from selected groups
+async function handleConfirmDemoteFromSelectedGroups(chatId, userId, bot, userStates) {
+  const state = userStates[userId].adminFlow;
+  
+  if (!state || state.type !== 'demote_new' || state.selectedGroups.length === 0) {
+    await bot.sendMessage(chatId, '❌ Pilih minimal 1 grup untuk demote!');
+    return;
+  }
+  
+  // Prepare confirmation data
+  const confirmData = [];
+  
+  for (const groupId of state.selectedGroups) {
+    const groupResult = state.foundGroups.find(g => g.groupId === groupId);
+    if (groupResult) {
+      confirmData.push({
+        groupId: groupResult.groupId,
+        groupName: groupResult.groupName,
+        admins: groupResult.foundAdmins
+      });
+    }
+  }
+  
+  state.confirmData = confirmData;
+  state.step = 'confirm_demote_new';
+  
+  let message = `🔍 **Konfirmasi Demote Admin**\n\n`;
+  message += `⚠️ Admin berikut akan di-demote:\n\n`;
+  
+  confirmData.forEach((data, index) => {
+    message += `${index + 1}. **${data.groupName}**\n`;
+    data.admins.forEach(admin => {
+      const roleIcon = admin.role === 'superadmin' ? '👑' : '👤';
+      message += `   ${roleIcon} ${admin.number}\n`;
+    });
+    message += `\n`;
+  });
+  
+  const totalAdmins = confirmData.reduce((sum, data) => sum + data.admins.length, 0);
+  message += `📊 **Total: ${totalAdmins} admin di ${confirmData.length} grup**\n\n`;
+  message += `⚠️ **Proses ini tidak bisa dibatalkan!**`;
+  
+  await bot.sendMessage(chatId, message, {
+    parse_mode: 'Markdown',
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '✅ Lanjutkan Demote', callback_data: 'confirm_demote_new' }],
+        [{ text: '❌ Batal', callback_data: 'cancel_admin_flow' }]
+      ]
+    }
+  });
 }
 
 // Handle admin numbers for add/promote flow
@@ -368,30 +669,6 @@ async function handleAdminNumbersForAddPromote(chatId, userId, phoneNumbers, bot
     reply_markup: {
       inline_keyboard: [
         [{ text: '✅ Lanjutkan Add/Promote', callback_data: 'confirm_add_promote' }],
-        [{ text: '❌ Batal', callback_data: 'cancel_admin_flow' }]
-      ]
-    }
-  });
-}
-
-// Handle admin numbers for demote flow
-async function handleAdminNumbersForDemote(chatId, userId, phoneNumbers, bot, userStates) {
-  const state = userStates[userId].adminFlow;
-  
-  state.adminsToSearch = phoneNumbers;
-  state.step = 'search_admin_in_groups';
-  
-  let message = `👥 **Admin yang akan dicari:**\n`;
-  phoneNumbers.forEach((number, index) => {
-    message += `${index + 1}. ${number}\n`;
-  });
-  message += `\n🔍 Klik tombol di bawah untuk mulai mencari admin di semua grup.`;
-  
-  await bot.sendMessage(chatId, message, {
-    parse_mode: 'Markdown',
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: '🔍 Mulai Cari Admin', callback_data: 'start_search_admin' }],
         [{ text: '❌ Batal', callback_data: 'cancel_admin_flow' }]
       ]
     }
@@ -445,338 +722,6 @@ async function handleAddPromoteAdmin(chatId, userId, bot, userStates) {
       }
     });
   }
-}
-
-// NEW: Handle Demote Admin - SIMPLIFIED FLOW
-async function handleDemoteAdmin(chatId, userId, bot, userStates) {
-  // Check if WhatsApp is connected
-  if (!userStates[userId]?.whatsapp?.isConnected) {
-    await bot.sendMessage(chatId, '❌ WhatsApp belum terhubung! Login dulu ya.');
-    return;
-  }
-  
-  const loadingMsg = await bot.sendMessage(chatId, '⏳ Mengambil daftar grup...');
-  
-  try {
-    const groups = await getAllGroups(userId);
-    
-    if (!groups || groups.length === 0) {
-      await safeEditMessage(bot, chatId, loadingMsg.message_id, '❌ Tidak ada grup yang ditemukan!', {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🏠 Menu Utama', callback_data: 'main_menu' }]
-          ]
-        }
-      });
-      return;
-    }
-    
-    // Initialize demote flow state
-    userStates[userId].adminFlow = {
-      type: 'demote',
-      step: 'select_demote_groups',
-      groups: groups,
-      selectedGroups: [],
-      currentPage: 0,
-      searchQuery: '',
-      selectedAdmins: [],
-      groupAdmins: {}
-    };
-    
-    await showDemoteGroupsList(chatId, userId, bot, userStates, loadingMsg.message_id);
-    
-  } catch (err) {
-    console.error('Error getting groups:', err);
-    await safeEditMessage(bot, chatId, loadingMsg.message_id, `❌ Error mengambil daftar grup: ${err.message}`, {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '🏠 Menu Utama', callback_data: 'main_menu' }]
-        ]
-      }
-    });
-  }
-}
-
-// NEW: Show demote groups list with pagination (5 per page)
-async function showDemoteGroupsList(chatId, userId, bot, userStates, messageId) {
-  const state = userStates[userId].adminFlow;
-  const groupsPerPage = 5; // 5 groups per page as requested
-  
-  // Filter groups by search query
-  let filteredGroups = state.groups;
-  if (state.searchQuery) {
-    filteredGroups = state.groups.filter(group => 
-      group.name.toLowerCase().includes(state.searchQuery.toLowerCase())
-    );
-  }
-  
-  const pagination = createPagination(state.currentPage, filteredGroups.length, groupsPerPage);
-  const pageGroups = filteredGroups.slice(pagination.startIndex, pagination.endIndex);
-  
-  let message = `📋 *Pilih Grup untuk Demote Admin*\n\n`;
-  
-  if (state.searchQuery) {
-    message += `🔍 Pencarian: "${state.searchQuery}"\n`;
-    message += `📊 Hasil: ${filteredGroups.length} grup\n\n`;
-  }
-  
-  message += `📄 Halaman ${pagination.currentPage + 1} dari ${pagination.totalPages}\n`;
-  message += `✅ Terpilih: ${state.selectedGroups.length} grup\n\n`;
-  
-  const keyboard = [];
-  
-  // Groups buttons
-  pageGroups.forEach(group => {
-    const isSelected = state.selectedGroups.includes(group.id);
-    const icon = isSelected ? '✅' : '⭕';
-    const adminStatus = group.isAdmin ? '👑' : '👤';
-    
-    keyboard.push([{
-      text: `${icon} ${adminStatus} ${group.name}`,
-      callback_data: `toggle_demote_group_${group.id}`
-    }]);
-  });
-  
-  // Navigation buttons
-  const navButtons = [];
-  if (pagination.hasPrev) {
-    navButtons.push({ text: '◀️ Prev', callback_data: `demote_groups_page_${pagination.currentPage - 1}` });
-  }
-  if (pagination.hasNext) {
-    navButtons.push({ text: 'Next ▶️', callback_data: `demote_groups_page_${pagination.currentPage + 1}` });
-  }
-  if (navButtons.length > 0) {
-    keyboard.push(navButtons);
-  }
-  
-  // Action buttons
-  keyboard.push([{ text: '🔍 Cari Grup', callback_data: 'search_demote_groups' }]);
-  
-  if (state.selectedGroups.length > 0) {
-    keyboard.push([{ text: '✅ Lanjut Pilih Admin', callback_data: 'finish_demote_group_selection' }]);
-  }
-  
-  keyboard.push([{ text: '❌ Batal', callback_data: 'cancel_admin_flow' }]);
-  
-  await safeEditMessage(bot, chatId, messageId, message, {
-    parse_mode: 'Markdown',
-    reply_markup: { inline_keyboard: keyboard }
-  });
-}
-
-// NEW: Handle search demote groups
-async function handleSearchDemoteGroups(chatId, userId, bot, userStates) {
-  const state = userStates[userId].adminFlow;
-  
-  if (!state || state.type !== 'demote') return;
-  
-  state.step = 'waiting_demote_search_query';
-  
-  await bot.sendMessage(chatId, '🔍 *Cari Grup*\n\nKetik nama grup yang mau dicari:', {
-    parse_mode: 'Markdown',
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: '❌ Batal', callback_data: 'cancel_admin_flow' }]
-      ]
-    }
-  });
-}
-
-// NEW: Handle toggle demote group selection
-async function handleToggleDemoteGroupSelection(chatId, userId, groupId, bot, userStates, messageId) {
-  const state = userStates[userId].adminFlow;
-  
-  if (!state || state.type !== 'demote') return;
-  
-  const index = state.selectedGroups.indexOf(groupId);
-  if (index > -1) {
-    state.selectedGroups.splice(index, 1);
-  } else {
-    state.selectedGroups.push(groupId);
-  }
-  
-  await showDemoteGroupsList(chatId, userId, bot, userStates, messageId);
-}
-
-// NEW: Handle demote groups page navigation
-async function handleDemoteGroupsPage(chatId, userId, page, bot, userStates, messageId) {
-  const state = userStates[userId].adminFlow;
-  
-  if (!state || state.type !== 'demote') return;
-  
-  state.currentPage = page;
-  await showDemoteGroupsList(chatId, userId, bot, userStates, messageId);
-}
-
-// UPDATED: Handle finish demote group selection with improved phone extraction
-async function handleFinishDemoteGroupSelection(chatId, userId, bot, userStates) {
-  const state = userStates[userId].adminFlow;
-  
-  if (!state || state.type !== 'demote' || state.selectedGroups.length === 0) {
-    await bot.sendMessage(chatId, '❌ Pilih minimal 1 grup dulu!');
-    return;
-  }
-  
-  const loadingMsg = await bot.sendMessage(chatId, '⏳ Mengambil daftar admin...');
-  
-  try {
-    // Get admins from all selected groups
-    state.groupAdmins = {};
-    let allAdmins = [];
-    
-    for (const groupId of state.selectedGroups) {
-      try {
-        const admins = await getGroupAdmins(userId, groupId);
-        state.groupAdmins[groupId] = admins;
-        
-        console.log(`[DEBUG][${userId}] Found ${admins.length} admins in group ${groupId}`);
-        
-        // Add to all admins with group info AND IMPROVED PHONE NUMBERS
-        admins.forEach(admin => {
-          let phoneNumber = extractCleanPhoneNumber(admin.id, userStates, userId);
-          if (!phoneNumber || phoneNumber === admin.id) {
-            phoneNumber = 'Unknown'; // fallback biar ga LID mentah
-          }
-          console.log(`[DEBUG][${userId}] Admin: ${admin.id} → number: ${phoneNumber}, role: ${admin.admin}`);
-          
-          const existingAdmin = allAdmins.find(a => a.phoneNumber === phoneNumber);
-          
-          if (existingAdmin) {
-            // Add group to existing admin
-            existingAdmin.groups.push({
-              id: groupId,
-              name: state.groups.find(g => g.id === groupId)?.name || 'Unknown'
-            });
-          } else {
-            // Add new admin with phone number
-            allAdmins.push({
-              id: admin.id, // Keep original JID for operations
-              phoneNumber: phoneNumber, // Display phone number
-              role: admin.admin,
-              groups: [{
-                id: groupId,
-                name: state.groups.find(g => g.id === groupId)?.name || 'Unknown'
-              }]
-            });
-          }
-        });
-      } catch (err) {
-        console.error(`Error getting admins for group ${groupId}:`, err);
-      }
-    }
-    
-    if (allAdmins.length === 0) {
-      await safeEditMessage(bot, chatId, loadingMsg.message_id, '❌ Tidak ada admin yang ditemukan di grup yang dipilih!', {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🏠 Menu Utama', callback_data: 'main_menu' }]
-          ]
-        }
-      });
-      return;
-    }
-    
-    state.allAdmins = allAdmins;
-    state.selectedAdmins = [];
-    state.currentPage = 0;
-    state.step = 'select_admins';
-    
-    await showAdminsList(chatId, userId, bot, userStates, loadingMsg.message_id);
-    
-  } catch (err) {
-    console.error('Error getting admins:', err);
-    await safeEditMessage(bot, chatId, loadingMsg.message_id, `❌ Error mengambil daftar admin: ${err.message}`, {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '🏠 Menu Utama', callback_data: 'main_menu' }]
-        ]
-      }
-    });
-  }
-}
-
-// NEW: Show admins list for selection WITH IMPROVED PHONE NUMBERS
-async function showAdminsList(chatId, userId, bot, userStates, messageId) {
-  const state = userStates[userId].adminFlow;
-  const adminsPerPage = 8;
-  
-  const pagination = createPagination(state.currentPage, state.allAdmins.length, adminsPerPage);
-  const pageAdmins = state.allAdmins.slice(pagination.startIndex, pagination.endIndex);
-  
-  let message = `👥 *Pilih Admin untuk Demote*\n\n`;
-  message += `📄 Halaman ${pagination.currentPage + 1} dari ${pagination.totalPages}\n`;
-  message += `✅ Terpilih: ${state.selectedAdmins.length} admin\n\n`;
-  
-  const keyboard = [];
-  
-  // Admin buttons WITH IMPROVED PHONE NUMBERS
-  pageAdmins.forEach(admin => {
-    const isSelected = state.selectedAdmins.includes(admin.id);
-    const icon = isSelected ? '✅' : '⭕';
-    const roleIcon = admin.role === 'superadmin' ? '👑' : '👤';
-    const groupNames = admin.groups.map(g => g.name).join(', ');
-    
-    // Show phone number instead of JID
-    keyboard.push([{
-      text: `${icon} ${roleIcon} ${admin.phoneNumber}`,
-      callback_data: `toggle_admin_${admin.id}`
-    }]);
-    
-    keyboard.push([{
-      text: `📂 Grup: ${groupNames}`,
-      callback_data: 'noop'
-    }]);
-  });
-  
-  // Navigation buttons
-  const navButtons = [];
-  if (pagination.hasPrev) {
-    navButtons.push({ text: '◀️ Prev', callback_data: `admins_page_${pagination.currentPage - 1}` });
-  }
-  if (pagination.hasNext) {
-    navButtons.push({ text: 'Next ▶️', callback_data: `admins_page_${pagination.currentPage + 1}` });
-  }
-  if (navButtons.length > 0) {
-    keyboard.push(navButtons);
-  }
-  
-  // Action buttons
-  if (state.selectedAdmins.length > 0) {
-    keyboard.push([{ text: '🚀 Lanjut Konfirmasi', callback_data: 'finish_demote_selection' }]);
-  }
-  
-  keyboard.push([{ text: '❌ Batal', callback_data: 'cancel_admin_flow' }]);
-  
-  await safeEditMessage(bot, chatId, messageId, message, {
-    parse_mode: 'Markdown',
-    reply_markup: { inline_keyboard: keyboard }
-  });
-}
-
-// NEW: Handle toggle admin selection
-async function handleToggleAdminSelection(chatId, userId, adminId, bot, userStates, messageId) {
-  const state = userStates[userId].adminFlow;
-  
-  if (!state || state.type !== 'demote') return;
-  
-  const index = state.selectedAdmins.indexOf(adminId);
-  if (index > -1) {
-    state.selectedAdmins.splice(index, 1);
-  } else {
-    state.selectedAdmins.push(adminId);
-  }
-  
-  await showAdminsList(chatId, userId, bot, userStates, messageId);
-}
-
-// NEW: Handle admins page navigation
-async function handleAdminsPage(chatId, userId, page, bot, userStates, messageId) {
-  const state = userStates[userId].adminFlow;
-  
-  if (!state || state.type !== 'demote') return;
-  
-  state.currentPage = page;
-  await showAdminsList(chatId, userId, bot, userStates, messageId);
 }
 
 // Show groups list with pagination
@@ -925,162 +870,6 @@ async function handleFinishGroupSelection(chatId, userId, bot, userStates) {
   });
 }
 
-// Handle start search admin
-async function handleStartSearchAdmin(chatId, userId, bot, userStates) {
-  const state = userStates[userId].adminFlow;
-  
-  if (!state || state.type !== 'demote' || state.adminsToSearch.length === 0) {
-    await bot.sendMessage(chatId, '❌ Tidak ada nomor admin yang valid untuk dicari.');
-    return;
-  }
-  
-  const loadingMsg = await bot.sendMessage(chatId, '⏳ Mencari admin di semua grup...');
-  
-  try {
-    const groups = await getAllGroups(userId);
-    const foundAdmins = [];
-    
-    for (const group of groups) {
-      try {
-        const admins = await getGroupAdmins(userId, group.id);
-        
-        for (const adminNumber of state.adminsToSearch) {
-          const adminJid = `${adminNumber}@s.whatsapp.net`;
-          const adminLid = `${adminNumber}@lid`;
-          
-          const isAdmin = admins.some(admin => {
-            const adminNumberFromJid = admin.id.split('@')[0].split(':')[0];
-            return admin.id === adminJid || 
-                   admin.id === adminLid || 
-                   adminNumberFromJid === adminNumber;
-          });
-          
-          if (isAdmin) {
-            const existing = foundAdmins.find(fa => 
-              fa.adminNumber === adminNumber && fa.groupId === group.id
-            );
-            
-            if (!existing) {
-              foundAdmins.push({
-                adminNumber: adminNumber,
-                groupId: group.id,
-                groupName: group.name
-              });
-            }
-          }
-        }
-      } catch (err) {
-        console.error(`Error checking admins in group ${group.id}:`, err);
-      }
-    }
-    
-    state.foundAdmins = foundAdmins;
-    state.step = 'select_demote_groups';
-    state.currentPage = 0;
-    state.selectedGroups = [];
-    
-    if (foundAdmins.length === 0) {
-      await safeEditMessage(bot, chatId, loadingMsg.message_id, '❌ Admin tidak ditemukan di grup manapun!', {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🏠 Menu Utama', callback_data: 'main_menu' }]
-          ]
-        }
-      });
-      return;
-    }
-    
-    await showDemoteGroupsList(chatId, userId, bot, userStates, loadingMsg.message_id);
-    
-  } catch (err) {
-    console.error('Error searching admins:', err);
-    await safeEditMessage(bot, chatId, loadingMsg.message_id, `❌ Error mencari admin: ${err.message}`, {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '🏠 Menu Utama', callback_data: 'main_menu' }]
-        ]
-      }
-    });
-  }
-}
-
-// Handle finish demote selection - UPDATED WITH IMPROVED PHONE NUMBERS
-async function handleFinishDemoteSelection(chatId, userId, bot, userStates) {
-  const state = userStates[userId].adminFlow;
-  
-  if (!state || state.type !== 'demote' || state.selectedAdmins.length === 0) {
-    await bot.sendMessage(chatId, '❌ Pilih minimal 1 admin untuk di-demote!');
-    return;
-  }
-  
-  // Prepare confirmation data WITH IMPROVED PHONE NUMBERS
-  const confirmData = [];
-  
-  // Group selected admins by group
-  const groupedAdmins = {};
-  
-  state.selectedAdmins.forEach(adminId => {
-    const admin = state.allAdmins.find(a => a.id === adminId);
-    if (!admin) return;
-    
-    admin.groups.forEach(group => {
-      if (state.selectedGroups.includes(group.id)) {
-        if (!groupedAdmins[group.id]) {
-          groupedAdmins[group.id] = {
-            groupName: group.name,
-            admins: []
-          };
-        }
-        
-        // Check if admin not already added, use phone number for display
-        if (!groupedAdmins[group.id].admins.find(a => a.phoneNumber === admin.phoneNumber)) {
-          groupedAdmins[group.id].admins.push({
-            id: admin.id, // Keep JID for operations
-            phoneNumber: admin.phoneNumber, // Display phone number
-            role: admin.role
-          });
-        }
-      }
-    });
-  });
-  
-  // Convert to confirmData format
-  for (const groupId in groupedAdmins) {
-    confirmData.push({
-      groupId,
-      groupName: groupedAdmins[groupId].groupName,
-      admins: groupedAdmins[groupId].admins
-    });
-  }
-  
-  state.confirmData = confirmData;
-  state.step = 'confirm_demote';
-  
-  let message = `🔍 *Konfirmasi Demote Admin*\n\n`;
-  message += `⚠️ Admin berikut akan di-demote:\n\n`;
-  
-  confirmData.forEach((data, index) => {
-    message += `${index + 1}. **${data.groupName}**\n`;
-    data.admins.forEach(admin => {
-      const roleIcon = admin.role === 'superadmin' ? '👑' : '👤';
-      message += `   ${roleIcon} ${admin.phoneNumber}\n`;
-    });
-    message += `\n`;
-  });
-  
-  message += `⚠️ Proses ini tidak bisa dibatalkan!`;
-  
-  await bot.sendMessage(chatId, message, {
-    parse_mode: 'Markdown',
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: '✅ Lanjutkan Demote', callback_data: 'confirm_demote' }],
-        [{ text: '❌ Batal', callback_data: 'cancel_admin_flow' }]
-      ]
-    }
-  });
-}
-
 // Handle confirm add/promote - IMPROVED WITH BETTER TIMING
 async function handleConfirmAddPromote(chatId, userId, bot, userStates) {
   const state = userStates[userId].adminFlow;
@@ -1223,11 +1012,11 @@ async function handleConfirmAddPromote(chatId, userId, bot, userStates) {
   clearUserFlowState(userStates, userId, 'admin');
 }
 
-// Handle confirm demote - UPDATED WITH IMPROVED PHONE NUMBERS IN LOG
-async function handleConfirmDemote(chatId, userId, bot, userStates) {
+// NEW DEMOTE FLOW - Handle confirm demote (new flow)
+async function handleConfirmDemoteNew(chatId, userId, bot, userStates) {
   const state = userStates[userId].adminFlow;
   
-  if (!state || state.type !== 'demote') return;
+  if (!state || state.type !== 'demote_new') return;
   
   const loadingMsg = await bot.sendMessage(chatId, '⏳ Memulai proses demote admin...');
   
@@ -1251,14 +1040,12 @@ async function handleConfirmDemote(chatId, userId, bot, userStates) {
         currentOperation++;
         
         try {
-          // Extract phone number from JID for demote operation
-          const phoneNumber = extractCleanPhoneNumber(admin.id, userStates, userId);
-          
-          await demoteParticipant(userId, data.groupId, phoneNumber);
-          statusMessage += `   ⬇️ Demoted ${admin.phoneNumber}\n`;
+          // Use the exact phone number from our search result
+          await demoteParticipant(userId, data.groupId, admin.number);
+          statusMessage += `   ⬇️ Demoted ${admin.number}\n`;
           successCount++;
           
-          // Update progress with phone number
+          // Update progress
           const progressMsg = generateProgressMessage(currentOperation, totalOperations, statusMessage, 'Demote');
           await safeEditMessage(bot, chatId, loadingMsg.message_id, progressMsg);
           
@@ -1267,8 +1054,8 @@ async function handleConfirmDemote(chatId, userId, bot, userStates) {
           
         } catch (err) {
           failCount++;
-          statusMessage += `   ❌ Error ${admin.phoneNumber}: ${err.message}\n`;
-          console.error(`Error demoting ${admin.phoneNumber} in ${data.groupId}:`, err);
+          statusMessage += `   ❌ Error ${admin.number}: ${err.message}\n`;
+          console.error(`Error demoting ${admin.number} in ${data.groupId}:`, err);
           
           // If rate limit, wait longer
           if (isRateLimitError(err)) {
@@ -1278,7 +1065,7 @@ async function handleConfirmDemote(chatId, userId, bot, userStates) {
       }
     }
     
-    // Final result with phone numbers
+    // Final result
     let finalMessage = `🎉 *Proses Demote Admin Selesai!*\n\n`;
     finalMessage += `✅ Berhasil: ${successCount}\n`;
     finalMessage += `❌ Gagal: ${failCount}\n\n`;
