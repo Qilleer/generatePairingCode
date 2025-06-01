@@ -217,6 +217,189 @@ function isBotAdminInGroup(groupMetadata, botJid, botLid) {
   return isAdmin;
 }
 
+// FIXED: Add the missing generatePairingCode function
+async function generatePairingCode(userId, phoneNumber, bot, messageId = null) {
+  const userStates = getUserStates();
+  try {
+    const sock = userStates[userId]?.whatsapp?.socket;
+    
+    if (!sock) {
+      throw new Error('Socket WhatsApp tidak tersedia');
+    }
+
+    console.log(`[DEBUG][${userId}] Generating pairing code for ${phoneNumber}`);
+    
+    // Request pairing code dari WhatsApp
+    const code = await sock.requestPairingCode(phoneNumber);
+    
+    if (!code) {
+      throw new Error('Gagal generate pairing code');
+    }
+
+    console.log(`[DEBUG][${userId}] Generated pairing code: ${code}`);
+    
+    // Format pairing code jadi lebih readable (XXXX-XXXX)
+    const formattedCode = code.match(/.{1,4}/g)?.join('-') || code;
+    
+    const message = `🔐 *Pairing Code WhatsApp*\n\n` +
+                   `📱 Nomor: ${phoneNumber}\n` +
+                   `🔑 Code: \`${formattedCode}\`\n\n` +
+                   `📋 *Cara pairing:*\n` +
+                   `1. Buka WhatsApp\n` +
+                   `2. Menu > Perangkat Tertaut\n` +
+                   `3. Tautkan dengan nomor telepon\n` +
+                   `4. Masukkan code: ${formattedCode}\n\n` +
+                   `⏰ Code valid selama 60 detik!`;
+    
+    if (messageId) {
+      // Edit existing message
+      await bot.editMessageText(message, {
+        chat_id: userId,
+        message_id: messageId,
+        parse_mode: 'Markdown'
+      });
+    } else {
+      // Send new message
+      await bot.sendMessage(userId, message, {
+        parse_mode: 'Markdown'
+      });
+    }
+    
+    console.log(`[DEBUG][${userId}] Sent pairing code to user`);
+    return code;
+    
+  } catch (err) {
+    console.error(`[ERROR][${userId}] Error generating pairing code:`, err);
+    
+    const errorMsg = `❌ *Error Generate Pairing Code*\n\n` +
+                    `Error: ${err.message}\n\n` +
+                    `Pastikan:\n` +
+                    `• Nomor WhatsApp valid\n` +
+                    `• WhatsApp sudah terinstall\n` +
+                    `• Koneksi internet stabil`;
+    
+    if (messageId) {
+      await bot.editMessageText(errorMsg, {
+        chat_id: userId,
+        message_id: messageId,
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🔄 Coba Lagi', callback_data: 'login' }],
+            [{ text: '🏠 Menu Utama', callback_data: 'main_menu' }]
+          ]
+        }
+      });
+    } else {
+      await bot.sendMessage(userId, errorMsg, {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🔄 Coba Lagi', callback_data: 'login' }],
+            [{ text: '🏠 Menu Utama', callback_data: 'main_menu' }]
+          ]
+        }
+      });
+    }
+    
+    throw err;
+  }
+}
+
+// FIXED: Add missing logoutWhatsApp function
+async function logoutWhatsApp(userId) {
+  const userStates = getUserStates();
+  try {
+    console.log(`[DEBUG][${userId}] Logging out WhatsApp...`);
+    
+    // Close socket connection
+    if (userStates[userId]?.whatsapp?.socket) {
+      try {
+        await userStates[userId].whatsapp.socket.logout();
+        console.log(`[DEBUG][${userId}] Socket logout successful`);
+      } catch (err) {
+        console.log(`[DEBUG][${userId}] Socket logout error (expected): ${err.message}`);
+      }
+    }
+    
+    // Clear user state
+    if (userStates[userId]?.whatsapp) {
+      userStates[userId].whatsapp.isConnected = false;
+      userStates[userId].whatsapp.socket = null;
+      userStates[userId].whatsapp.lastConnect = null;
+    }
+    
+    // Delete session files
+    const sessionPath = path.join(config.whatsapp.sessionPath, `wa_${userId}`);
+    if (fs.existsSync(sessionPath)) {
+      try {
+        // Delete all files in session directory
+        const files = fs.readdirSync(sessionPath);
+        for (const file of files) {
+          const filePath = path.join(sessionPath, file);
+          fs.unlinkSync(filePath);
+        }
+        
+        // Remove directory
+        fs.rmdirSync(sessionPath);
+        console.log(`[DEBUG][${userId}] Session directory deleted`);
+      } catch (err) {
+        console.error(`[ERROR][${userId}] Error deleting session files:`, err);
+      }
+    }
+    
+    console.log(`[DEBUG][${userId}] WhatsApp logout completed`);
+    return true;
+    
+  } catch (err) {
+    console.error(`[ERROR][${userId}] Error during WhatsApp logout:`, err);
+    return false;
+  }
+}
+
+// FIXED: Add missing toggleAutoAccept function
+async function toggleAutoAccept(userId, enabled) {
+  const userStates = getUserStates();
+  try {
+    console.log(`[DEBUG][${userId}] Toggling auto accept: ${enabled}`);
+    
+    // Initialize if not exists
+    if (!userStates[userId]) {
+      userStates[userId] = {};
+    }
+    
+    if (!userStates[userId].autoAccept) {
+      userStates[userId].autoAccept = {};
+    }
+    
+    // Update state
+    userStates[userId].autoAccept.enabled = enabled;
+    
+    // Save to file
+    await saveUserSettings(userId);
+    
+    console.log(`[DEBUG][${userId}] Auto accept ${enabled ? 'enabled' : 'disabled'}`);
+    return { success: true };
+    
+  } catch (err) {
+    console.error(`[ERROR][${userId}] Error toggling auto accept:`, err);
+    return { success: false, error: err.message };
+  }
+}
+
+// FIXED: Add missing getAutoAcceptStatus function
+function getAutoAcceptStatus(userId) {
+  const userStates = getUserStates();
+  try {
+    const enabled = userStates[userId]?.autoAccept?.enabled || false;
+    console.log(`[DEBUG][${userId}] Auto accept status: ${enabled}`);
+    return { enabled };
+  } catch (err) {
+    console.error(`[ERROR][${userId}] Error getting auto accept status:`, err);
+    return { enabled: false };
+  }
+}
+
 async function promoteParticipant(userId, groupId, participantNumber) {
   const userStates = getUserStates();
   try {
@@ -925,6 +1108,10 @@ function getAddParticipantErrorMessage(statusCode) {
 }
 
 module.exports = {
+  generatePairingCode,
+  logoutWhatsApp,
+  toggleAutoAccept,
+  getAutoAcceptStatus,
   promoteParticipant,
   demoteParticipant,
   renameGroup,
