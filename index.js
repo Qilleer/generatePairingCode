@@ -56,7 +56,7 @@ bot.onText(/\/start/, async (msg) => {
   await showMainMenu(chatId, bot, userStates);
 });
 
-// Handle callback queries - FIXED ROUTING WITH ALL NEW DEMOTE CALLBACKS
+// Handle callback queries - UPDATED WITH NEW DEMOTE FLOW CALLBACKS
 bot.on('callback_query', async (query) => {
   const chatId = query.message.chat.id;
   const userId = query.from.id;
@@ -136,29 +136,24 @@ bot.on('callback_query', async (query) => {
       return;
     }
     
-    // ADMIN HANDLER - UPDATED WITH ALL NEW DEMOTE FLOW CALLBACKS
+    // ADMIN HANDLER - UPDATED WITH NEW DEMOTE FLOW CALLBACKS
     if (data === 'admin_management' ||
         data === 'add_promote_admin' ||
         data === 'demote_admin' ||
         data === 'search_groups' ||
         data === 'finish_group_selection' ||
-        data === 'start_search_admin' ||
-        data === 'finish_demote_selection' ||
         data === 'confirm_add_promote' ||
-        data === 'confirm_demote' ||
         data === 'cancel_admin_flow' ||
-        // NEW DEMOTE FLOW CALLBACKS - COMPLETE LIST
-        data === 'search_demote_groups' ||
-        data === 'finish_demote_group_selection' ||
+        // NEW DEMOTE FLOW CALLBACKS - LENGKAP
+        data === 'search_admin_in_all_groups' ||
+        data === 'confirm_demote_from_selected_groups' ||
+        data === 'confirm_demote_new' ||
+        // Group selection callbacks untuk add/promote
         data.startsWith('toggle_group_') ||
         data.startsWith('groups_page_') ||
+        // NEW: Group selection callbacks untuk demote (beda prefix)
         data.startsWith('toggle_demote_group_') ||
-        data.startsWith('demote_groups_page_') ||
-        data.startsWith('toggle_admin_') ||
-        data.startsWith('admins_page_') ||
-        // OLD DEMOTE CALLBACKS (still supported for compatibility)
-        data.startsWith('toggle_demote_') ||
-        data.startsWith('demote_page_')) {
+        data.startsWith('demote_groups_page_')) {
       console.log(`[DEBUG] Routing to Admin handler: ${data}`);
       await handleAdminCallbacks(query, bot, userStates);
       return;
@@ -213,7 +208,7 @@ bot.on('message', async (msg) => {
       handled = await handleAuthMessages(msg, bot, userStates);
     }
     
-    // If not handled by auth, try admin handler
+    // If not handled by auth, try admin handler (UPDATED untuk new demote flow)
     if (!handled) {
       handled = await handleAdminMessages(msg, bot, userStates);
     }
